@@ -20,6 +20,7 @@ MODEL_ROUTING = {
             32768: {"url": "http://localhost:3000/v1/chat/completions", "model": "Qwen/Qwen2.5-72B-Instruct"},
             131072: {"url": "http://localhost:3000/v1/chat/completions", "model": "Qwen/Qwen2.5-72B-Instruct-128K"}
         },
+        "token": "XXXXXXXXXXXX",
         "threshold": 0.9
     },
 }

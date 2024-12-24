@@ -67,18 +67,20 @@ def chat_completions():
 
     # Select endpoint
     endpoint = select_endpoint(prompt, model_routing)
-    print(f"Selected endpoint: {endpoint}")
 
     # Replace model name (if endpoints are provided in routing strategy and the selected endpoint has a model field)
     if "endpoints" in model_routing and endpoint.get("model"):
         request_data['model'] = endpoint.get("model")
 
-    # Forward request and get response
+    # Update Authorization token if a specific token is defined in the model routing
+    token_override = model_routing.get("token")
+    print(f"Selected endpoint: {endpoint}, token: {token_override}")
     headers = {
-        'Authorization': request.headers.get('Authorization'),
+        'Authorization': "Bearer {}".format(token_override) if token_override else request.headers.get('Authorization'),
         'Content-Type': 'application/json'
     }
 
+    # Forward request and get response
     return forward_request(endpoint, request_data, headers)
 
 if __name__ == '__main__':
