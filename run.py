@@ -82,4 +82,15 @@ def chat_completions():
     return forward_request(endpoint, request_data, headers)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    import argparse
+
+    # Create an argument parser to handle command-line arguments
+    parser = argparse.ArgumentParser(
+        description="Run the token-router application. This application routes requests to the appropriate endpoint based on the model and prompt."
+    )
+    parser.add_argument('--port', type=int, default=8080, help='The port number on which the application will run (default is 8080)')
+
+    args = parser.parse_args()
+
+    # argparse automatically handles the --help option
+    app.run(host='0.0.0.0', port=args.port)
