@@ -74,20 +74,21 @@ def handle_chat_completions():
     if data['model'] in REWRITE_RULES:
         print(f"\t\trewrite {data['model']}")
         for rule_key, rule_value in REWRITE_RULES[data['model']].items():
-            # Rewrite parameters
-            if rule_key != 'message':
-                data[rule_key] = rule_value
+            # Insert prompts
+            if rule_key == 'message':
+                for message in rule_value:  
+                    data['messages'].insert(0, message)
             # Rewrite messages
+            elif rule_key == 'tools':
+                if 'tools' not in data:
+                    data['tools'] = []
+                for tool in rule_value:
+                    data['tools'].append(tool)
+            # Rewrite parameters
             else:
-                if isinstance(rule_value, list):  # Insert prompts
-                    for message in rule_value:
-                        data['messages'].insert(0, message)
-                else:  # Insert tools
-                    for vk, vv in rule_value.items():
-                        if vk == 'tools':
-                            data['messages'][-1]['tools'] = vv
+                data[rule_key] = rule_value
     
-    # print(data)  # After processing
+    print(data)  # After processing
     
     headers = {
         'Authorization': request.headers.get('Authorization'),  # Pass through the authorization header

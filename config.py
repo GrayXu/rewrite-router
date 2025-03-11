@@ -51,35 +51,38 @@ REWRITE_RULES = {
     # insert tools (e.g. force google search)
     'gemini-2.0-pro-search': {
         "model": "gemini-2.0-pro",  # change model name
-        "message": {
-            "tools": [
-                {"googleSearch": {}}
-            ]
-        }
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "googleSearch"
+            }
+        }]
     },
     'gemini-2.0-flash-search': {
         "model": "gemini-2.0-flash",
-        "message": {
-            "tools": [
-                {"googleSearch": {}}
-            ]
-        }
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "googleSearch"
+            }
+        }]
     },
     'gemini-2.0-flash-thinking-search': {
         "model": "gemini-2.0-flash-thinking",
-        "message": {
-            "tools": [
-                {"googleSearch": {}}
-            ]
-        }
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "googleSearch"
+            }
+        }]
     },
     # insert system prompts
     'model-with-sys-prompts': {
-        "message": [
-            {
-                "role": "system",
-                "content": "You are ChatGPT."
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "googleSearch"
             }
-        ]
+        }]
     },
 }
