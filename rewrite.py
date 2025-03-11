@@ -18,7 +18,7 @@ def get_token_count(text):
 def select_model(prompt, model_routing):
     """Select the appropriate model based on the number of tokens and model routing"""
     token_count = get_token_count(prompt)
-    print(f"Token count: {token_count}")
+    # print(f"Token count: {token_count}")
 
     models = model_routing["models"]
     threshold = model_routing["threshold"]
@@ -88,7 +88,7 @@ def handle_chat_completions():
             else:
                 data[rule_key] = rule_value
     
-    print(data)  # After processing
+    # print(data)  # After processing
     
     headers = {
         'Authorization': request.headers.get('Authorization'),  # Pass through the authorization header
@@ -114,7 +114,7 @@ def list_models():
         headers=headers,
         stream=False
     )
-    print(response.text)
+    # print(response.text)
     response_data = response.json()
 
     if 'data' not in response_data or not isinstance(response_data['data'], list):
@@ -143,21 +143,52 @@ def list_models():
         "object": "list"
     })
 
-# Handle other requests
+# Proxy others
+@app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 @app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
-def proxy_all(path):
-    # Forward all other requests directly
+def proxy_others(path):
+    # print(f"Proxying {path}")
     url = f"{BACKEND_URL}/{path}"
-    headers = {
-        'Authorization': request.headers.get('Authorization'),  # Pass through the authorization header
-        'Content-Type': 'application/json'
-    }
-    data = request.get_data()  # Get the raw request body (unparsed)
-    return forward_request(
-        url,
-        data,
-        headers
-    )
+
+    headers = {key: value for key, value in request.headers.items() if key.lower() != 'host'}
+    method = request.method.lower()
+
+    # Handle request body and query parameters
+    data = request.get_data() if request.method in ['POST', 'PUT', 'PATCH'] else None
+    params = request.args if request.method == 'GET' else None
+
+    try:
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=headers,
+            data=data,
+            params=params,
+            stream=True
+        )
+        response.raise_for_status()
+
+        def generate():
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    yield chunk
+
+        return Response(
+            stream_with_context(generate()),
+            content_type=response.headers.get('Content-Type'),
+            status=response.status_code
+        )
+    except requests.exceptions.RequestException as e:
+        error_message = f"Error forwarding request: {e}"
+        print(error_message)
+        return Response(error_message, status=502)
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=3034)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run rewrite router with specified host and port.")
+    parser.add_argument('--host', type=str, default='127.0.0.1', help='run on (default: 127.0.0.1)')
+    parser.add_argument('--port', type=int, default=3034, help='Port to run on (default: 3034)')
+    args = parser.parse_args()
+
+    app.run(host=args.host, port=args.port)
