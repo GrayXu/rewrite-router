@@ -1,6 +1,6 @@
-# rewrite router proxy
+# Rewrite router
 
-This is an OpenAI-compatible API Proxy designed to:
+This is an OpenAI-compatible API router designed to:
 
 - **Rewrite request parameters**: Adjust parameters sent in API requests.
 - **Insert system prompts**: Add system-level prompts to guide the model's behavior.
