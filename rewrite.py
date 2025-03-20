@@ -6,8 +6,6 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-from config import BACKEND_URL, REWRITE_RULES, ROUTING_RULES
-
 # Tokenizer used
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
 
@@ -43,11 +41,11 @@ def forward_request(url, request_data, headers):
         return Response(stream_with_context(generate()), content_type='text/event-stream')
 
     except requests.exceptions.RequestException as e:
-        error_message = f"Error forwarding request: {e}"
+        error_message = f"(model: {request_data['model']}) Error forwarding request: {e}"
         print(error_message)
         return Response(error_message, status=502)
 
-@app.route('/v1/chat/completions', methods=['POST'])
+@app.route('/v1/chat/completions', methods=['GET','POST'])
 def handle_chat_completions():
     # print('-'*20)
     # Get the request body
@@ -90,10 +88,7 @@ def handle_chat_completions():
     
     # print(data)  # After processing
     
-    headers = {
-        'Authorization': request.headers.get('Authorization'),  # Pass through the authorization header
-        'Content-Type': 'application/json'
-    }
+    headers = {key: value for key, value in request.headers.items() if key.lower() != 'host'}
 
     return forward_request(
         f"{BACKEND_URL}/v1/chat/completions",
@@ -105,10 +100,7 @@ def handle_chat_completions():
 def list_models():
     # print('-'*10+'list_models'+'-'*10)
     # Forward the request to the backend
-    headers = {
-        'Authorization': request.headers.get('Authorization'),  # Pass through the authorization header
-        'Content-Type': 'application/json'
-    }
+    headers = {key: value for key, value in request.headers.items() if key.lower() != 'host'}
     response = requests.get(  # Change to GET method
         f"{BACKEND_URL}/v1/models", 
         headers=headers,
@@ -179,13 +171,21 @@ def proxy_others(path):
             status=response.status_code
         )
     except requests.exceptions.RequestException as e:
-        error_message = f"Error forwarding request: {e}"
+        error_message = f"(proxy_others) Error forwarding request: {e}"
         print(error_message)
         return Response(error_message, status=502)
 
 if __name__ == '__main__':
     import argparse
 
+    # load config json
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    
+    BACKEND_URL = config['BACKEND_URL']
+    REWRITE_RULES = config['REWRITE_RULES']
+    ROUTING_RULES = config['ROUTING_RULES']
+    
     parser = argparse.ArgumentParser(description="Run rewrite router with specified host and port.")
     parser.add_argument('--host', type=str, default='127.0.0.1', help='run on (default: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=3034, help='Port to run on (default: 3034)')
