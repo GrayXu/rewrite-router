@@ -70,13 +70,11 @@
                 }
             ]
         },
-        "model-with-sys-prompts": {
-            "tools": [
+        "test-with-sys-prompts": {
+            "message": [
                 {
-                    "type": "function",
-                    "function": {
-                        "name": "googleSearch"
-                    }
+                    "role": "system",
+                    "content": "You are ChatGPT."
                 }
             ]
         }
