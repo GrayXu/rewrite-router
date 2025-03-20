@@ -22,6 +22,11 @@ python ./rewrite.py --port=3034
 gunicorn --workers 2 --threads 2 --bind 0.0.0.0:3034 rewrite:app
 ```
 
+nodejs version
+```bash
+node rewrite.js
+```
+
 ---
 
 这是一个兼容 OpenAI 的 API 代理，旨在：
@@ -46,3 +51,7 @@ python ./rewrite.py --port=3034
 # 或者，使用 Gunicorn 进行生产部署 (pip install gunicorn)：
 gunicorn --workers 2 --threads 2 --bind 0.0.0.0:3034 token_router:app
 ```
+
+nodejs版本
+```bash
+node rewrite.js
