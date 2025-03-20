@@ -48,8 +48,6 @@ const getTokenCount = (text) => {
   } catch (error) {
     console.error('Error counting tokens:', error);
     return 0;
-  } finally {
-    tokenizer.free();
   }
 };
 
@@ -169,7 +167,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       body: JSON.stringify(data)
     };
 
-    console.log(`Forwarding request to ${BACKEND_URL}/v1/chat/completions`);
+    // console.log(`Forwarding request to ${BACKEND_URL}/v1/chat/completions`);
 
     const response = await fetch(`${BACKEND_URL}/v1/chat/completions`, fetchOptions);
     
