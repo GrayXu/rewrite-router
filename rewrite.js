@@ -53,30 +53,26 @@ const getTokenCount = (text) => {
 
 // Calculate the token count of messages
 const getMessagesTokenCount = (messages) => {
-  if (!Array.isArray(messages)) {
-    return 0;
-  }
+  if (!Array.isArray(messages)) return 0;
   
-  let totalTokens = 0;
-  
-  for (const message of messages) {
-    if (typeof message.content === 'string') {
-      totalTokens += getTokenCount(message.content);
-    } else if (Array.isArray(message.content)) {
-      // Handle multimodal content
-      for (const part of message.content) {
+  let totalTokens = 2; // Base format overhead
+  const perMessageTokens = 4; // Role marker tokens
+
+  for (const { content } of messages) {
+    totalTokens += perMessageTokens;
+    
+    if (typeof content === 'string') {
+      totalTokens += tokenizer.encode(content).length;
+    } else if (Array.isArray(content)) {
+      let combinedText = '';
+      for (const part of content) {
         if (typeof part.text === 'string') {
-          totalTokens += getTokenCount(part.text);
+          combinedText += part.text;
         }
       }
+      totalTokens += tokenizer.encode(combinedText).length;
     }
-    
-    // Add tokens for role markers (approximate)
-    totalTokens += 4; // Base overhead per message
   }
-  
-  // Add base format overhead
-  totalTokens += 2;
   
   return totalTokens;
 };
