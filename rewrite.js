@@ -5,6 +5,7 @@ const bodyParser = require('body-parser');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const { Readable } = require('stream');
+const chalk = require('chalk');
 
 // Tiktoken related imports and initialization
 const { Tiktoken } = require("@dqbd/tiktoken");
@@ -41,7 +42,7 @@ const getTokenCount = (text) => {
   if (typeof text !== 'string') {
     return 0;
   }
-  
+
   try {
     const tokens = tokenizer.encode(text);
     return tokens.length;
@@ -54,13 +55,13 @@ const getTokenCount = (text) => {
 // Calculate the token count of messages
 const getMessagesTokenCount = (messages) => {
   if (!Array.isArray(messages)) return 0;
-  
+
   let totalTokens = 2; // Base format overhead
   const perMessageTokens = 4; // Role marker tokens
 
   for (const { content } of messages) {
     totalTokens += perMessageTokens;
-    
+
     if (typeof content === 'string') {
       totalTokens += tokenizer.encode(content).length;
     } else if (Array.isArray(content)) {
@@ -73,7 +74,7 @@ const getMessagesTokenCount = (messages) => {
       totalTokens += tokenizer.encode(combinedText).length;
     }
   }
-  
+
   return totalTokens;
 };
 
@@ -82,12 +83,12 @@ const selectModel = (messages, modelRouting) => {
     console.warn('Invalid model routing configuration');
     return null;
   }
-  
+
   // Convert messages to a format that can calculate tokens
   let promptText = '';
   if (Array.isArray(messages)) {
     const tokenCount = getMessagesTokenCount(messages);
-    
+
     const contextLengths = Object.keys(modelRouting.models)
       .map(Number)
       .sort((a, b) => a - b);
@@ -107,8 +108,9 @@ const selectModel = (messages, modelRouting) => {
 // Handle /v1/chat/completions route
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    console.log(`Received chat completions request: ${req.headers['content-type']}`);
-    
+    // Modified: Use toLocaleString() to output local time
+    console.log(`[${new Date().toLocaleString()}] Received chat completions request: ${req.headers['content-type']}`);
+
     // Ensure we have a JSON formatted request body
     let data;
     if (req.headers['content-type'] && req.headers['content-type'].includes('application/json')) {
@@ -117,25 +119,29 @@ app.post('/v1/chat/completions', async (req, res) => {
       try {
         data = JSON.parse(req.body.toString());
       } catch (e) {
-        console.error('Failed to parse request body as JSON');
+        // Modified: Use toLocaleString() to output local time
+        console.error(`[${new Date().toLocaleString()}] Failed to parse request body as JSON`);
         return res.status(400).json({ error: 'Invalid JSON in request body' });
       }
     }
-    
-    console.log(`Request model: ${data.model}`);
-    
+
+    // Modified: Use chalk.red() to output the model name in red, and use toLocaleString() to output local time
+    console.log(`[${new Date().toLocaleString()}] Request model: ${chalk.red(data.model)}`);
+
     // Handle automatic model routing selection
     if (ROUTING_RULES[data.model]) {
       const selectedModel = selectModel(data.messages, ROUTING_RULES[data.model]);
       if (selectedModel) {
-        console.log(`Auto-routing: ${data.model} -> ${selectedModel}`);
-        data.model = selectedModel;
+        // Modified: Use chalk.red() to output the model name in red, and use toLocaleString() to output local time
+        console.log(`[${new Date().toLocaleString()}] Auto-routing: ${chalk.red(data.model)} -> ${chalk.red(selectedModel)}`);
+        data.model = selectedModel; // Update the model in data to the selected model
       }
     }
-    
+
     // Apply rewrite rules
-    if (REWRITE_RULES[data.model]) {
-      console.log(`Applying rewrite rules for ${data.model}`);
+    if (REWRITE_RULES[data.model]) { // Use the updated data.model
+      // Modified: Use chalk.red() to output the model name in red, and use toLocaleString() to output local time
+      console.log(`[${new Date().toLocaleString()}] Applying rewrite rules for ${chalk.red(data.model)}`);
       const rules = REWRITE_RULES[data.model];
 
       Object.entries(rules).forEach(([key, value]) => {
@@ -146,6 +152,8 @@ app.post('/v1/chat/completions', async (req, res) => {
         } else if (key === 'stream' && value === 'false') {
           data.stream = false;
         } else {
+          // Modified: Use toLocaleString() to output local time
+          console.log(`[${new Date().toLocaleString()}] \t\trewrite rule: ${key} = ${value}`);
           data[key] = value;
         }
       });
@@ -163,28 +171,30 @@ app.post('/v1/chat/completions', async (req, res) => {
       body: JSON.stringify(data)
     };
 
-    // console.log(`Forwarding request to ${BACKEND_URL}/v1/chat/completions`);
+    // Modified: Use toLocaleString() to output local time
+    console.log(`[${new Date().toLocaleString()}] Forwarding data:`, data); // Print the final data sent to the backend
 
     const response = await fetch(`${BACKEND_URL}/v1/chat/completions`, fetchOptions);
-    
+
     // Set corresponding response headers
     Object.entries(response.headers.raw()).forEach(([key, values]) => {
       if (key.toLowerCase() !== 'content-encoding' && key.toLowerCase() !== 'transfer-encoding') {
         res.set(key, values.join(', '));
       }
     });
-    
+
     res.status(response.status);
-    
+
     // Handle streaming response
     if (data.stream) {
-      // console.log('Streaming response back to client');
+      // console.log(`[${new Date().toLocaleString()}] Streaming response back to client`); // Uncomment as needed
       const reader = response.body;
       reader.pipe(res);
-      
+
       // Error handling
       reader.on('error', (err) => {
-        console.error('Stream error:', err);
+        // Modified: Use toLocaleString() to output local time
+        console.error(`[${new Date().toLocaleString()}] Stream error:`, err);
         if (!res.headersSent) {
           res.status(500).json({ error: 'Stream processing error' });
         } else {
@@ -197,13 +207,14 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.send(responseData);
     }
   } catch (error) {
-    console.error(`Error processing chat completions: ${error.stack}`);
+    // Modified: Use toLocaleString() to output local time
+    console.error(`[${new Date().toLocaleString()}] Error processing chat completions: ${error.stack}`);
     if (!res.headersSent) {
-      res.status(502).json({ 
-        error: { 
-          message: 'Error forwarding request to backend', 
-          type: 'proxy_error' 
-        } 
+      res.status(502).json({
+        error: {
+          message: 'Error forwarding request to backend',
+          type: 'proxy_error'
+        }
       });
     }
   }
@@ -212,21 +223,23 @@ app.post('/v1/chat/completions', async (req, res) => {
 // Handle model list endpoint
 app.get('/v1/models', async (req, res) => {
   try {
-    // console.log('Fetching models list from backend');
+    // console.log(`[${new Date().toLocaleString()}] Fetching models list from backend`); // Uncomment as needed
     const headers = { ...req.headers };
     delete headers['host'];
 
     const response = await fetch(`${BACKEND_URL}/v1/models`, { headers });
-    
+
     if (!response.ok) {
-      console.error(`Backend returned error: ${response.status}`);
+      // Modified: Use toLocaleString() to output local time
+      console.error(`[${new Date().toLocaleString()}] Backend returned error: ${response.status}`);
       return res.status(response.status).send(await response.text());
     }
-    
+
     const responseData = await response.json();
 
     if (!Array.isArray(responseData?.data)) {
-      console.error('Invalid response format from backend');
+      // Modified: Use toLocaleString() to output local time
+      console.error(`[${new Date().toLocaleString()}] Invalid response format from backend`);
       return res.status(500).json({ error: "Invalid response from backend" });
     }
 
@@ -260,22 +273,30 @@ app.get('/v1/models', async (req, res) => {
 
     res.json({ ...responseData, data: modelList });
   } catch (e) {
-    console.error(`Error fetching models: ${e.stack}`);
+    // Modified: Use toLocaleString() to output local time
+    console.error(`[${new Date().toLocaleString()}] Error fetching models: ${e.stack}`);
     res.status(502).json({ error: { message: "Error connecting to backend", type: "proxy_error" } });
   }
 });
 
 // General proxy handling for other routes
+// General proxy handling for other routes
 app.all('*', async (req, res) => {
   try {
     const path = req.path;
     const method = req.method;
-    console.log(`Proxying ${method} request to: ${path}`);
+    const timestamp = new Date().toLocaleString(); // Store timestamp for consistent logging
+    console.log(`[${timestamp}] Proxying ${method} request to: ${path}`);
 
     // Prepare request headers
     const headers = { ...req.headers };
+    // Keep host header from original request unless it's the proxy's own host/port
+    // Or let node-fetch determine the host based on targetUrl, which is usually better.
+    // For simplicity, let's continue deleting it and let node-fetch handle it.
     delete headers['host'];
-    
+    // Content-Length will be automatically handled by node-fetch based on the body
+    delete headers['content-length']; // Remove potentially incorrect length from original req
+
     // Prepare request options
     const fetchOptions = {
       method,
@@ -284,66 +305,133 @@ app.all('*', async (req, res) => {
     };
 
     // Handle request body
-    if (['POST', 'PUT', 'PATCH'].includes(method)) {
-      if (req.is('application/json')) {
-        fetchOptions.body = JSON.stringify(req.body);
-        headers['content-type'] = 'application/json';
-      } else if (req.is('text/*')) {
-        fetchOptions.body = req.body;
-      } else {
-        // Raw request body
-        fetchOptions.body = req.body;
-      }
+    // Ensure req.body is correctly parsed before this middleware if needed
+    // The express.raw middleware should provide req.body as a Buffer for non-text/json types
+    if (['POST', 'PUT', 'PATCH'].includes(method) && req.body) {
+       // Check if body is empty buffer or empty object/string before assigning
+       if (Buffer.isBuffer(req.body) && req.body.length > 0) {
+           fetchOptions.body = req.body;
+           // Ensure content-type is passed correctly
+           if (!headers['content-type']) {
+               headers['content-type'] = req.headers['content-type'] || 'application/octet-stream'; // Default if unknown
+           }
+       } else if (typeof req.body === 'string' && req.body.length > 0) {
+           fetchOptions.body = req.body;
+           if (!headers['content-type']) {
+                headers['content-type'] = req.headers['content-type'] || 'text/plain';
+           }
+       } else if (typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+            // Assuming JSON if it's an object and content-type was application/json
+           if (req.is('application/json')) {
+               fetchOptions.body = JSON.stringify(req.body);
+               headers['content-type'] = 'application/json'; // Ensure correct header
+           } else {
+               // If it's an object but not json, it might be urlencoded form data
+               // Body-parser middleware should ideally handle this before it gets here
+               // For safety, let's log a warning if we get an object without json type
+               console.warn(`[${timestamp}] Received object body for ${method} ${path} without application/json content-type. Sending as is.`);
+               fetchOptions.body = req.body; // May or may not work depending on backend
+           }
+       }
     }
 
+
     // Send request to backend
-    const targetUrl = `${BACKEND_URL}${path}${req.url.replace(req.path, '')}`;
-    console.log(`Forwarding to: ${targetUrl}`);
-    
+    // Construct URL carefully: Use req.originalUrl to preserve the full path and query string
+    const targetUrl = `${BACKEND_URL}${req.originalUrl}`;
+    console.log(`[${timestamp}] Forwarding to: ${targetUrl}`);
+
     const response = await fetch(targetUrl, fetchOptions);
-    
-    // Set response headers
+    console.log(`[${timestamp}] Backend response status: ${response.status}`);
+
+    // Set response headers from backend response
     Object.entries(response.headers.raw()).forEach(([key, values]) => {
-      if (key.toLowerCase() !== 'content-encoding' && key.toLowerCase() !== 'transfer-encoding') {
+      // Avoid setting encoding/transfer headers that might conflict with Node's handling
+      const lowerKey = key.toLowerCase();
+      if (lowerKey !== 'content-encoding' && lowerKey !== 'transfer-encoding' && lowerKey !== 'connection') {
+         // Note: 'connection' header is also often problematic for proxies
         res.set(key, values.join(', '));
       }
     });
-    
+
     // Set status code
     res.status(response.status);
-    
-    // Forward response body
+
+    // --- MODIFICATION START ---
+    // Handle response body: Read fully for non-streaming, pipe for known streaming types if needed
+
     const contentType = response.headers.get('content-type');
-    
-    // If it's a streaming response, stream directly
-    if (response.body) {
-      response.body.pipe(res);
+
+    // Define types you might want to explicitly stream (if any passed through here)
+    const streamingContentTypes = ['text/event-stream']; // Add other types like video/audio if needed
+
+    // Decide whether to stream or buffer
+    // Simple approach: buffer everything unless it's a known streaming type
+    if (response.body && contentType && streamingContentTypes.some(type => contentType.includes(type))) {
+        console.log(`[${timestamp}] Piping streaming response for Content-Type: ${contentType}`);
+        response.body.pipe(res);
+        response.body.on('error', (pipeErr) => {
+            console.error(`[${timestamp}] Error piping backend stream:`, pipeErr);
+            if (!res.headersSent) {
+                 res.status(500).send('Proxy stream error');
+            } else {
+                 res.end(); // Attempt to close the connection cleanly
+            }
+        });
+    } else if (response.body) {
+        // For non-streaming or unknown types, read the full body first
+        try {
+            // console.log(`[${timestamp}] Buffering response body for Content-Type: ${contentType || 'N/A'}`);
+            const bodyBuffer = await response.buffer(); // Read body into a buffer
+            res.send(bodyBuffer); // Send the buffer
+            // console.log(`[${timestamp}] Successfully sent buffered response.`);
+        } catch (bufferError) {
+            console.error(`[${timestamp}] Error reading backend response body:`, bufferError);
+            if (!res.headersSent) {
+               res.status(500).send('Error reading backend response');
+            } else {
+               res.end(); // End response if headers already sent
+            }
+        }
     } else {
-      res.end();
+        // No response body (e.g., for 204 No Content)
+        res.end();
     }
+    // --- MODIFICATION END ---
 
   } catch (error) {
-    console.error(`Proxy error: ${error.stack}`);
+    const timestamp = new Date().toLocaleString();
+    console.error(`[${timestamp}] Proxy error: ${error.stack}`);
     if (!res.headersSent) {
-      res.status(502).json({ 
-        error: { 
-          message: 'Error proxying request to backend', 
-          type: 'proxy_error' 
-        } 
+      res.status(502).json({ // Send JSON error for consistency? Or text?
+        error: {
+          message: 'Error proxying request to backend',
+          type: 'proxy_error',
+          details: error.message // Include underlying error message
+        }
       });
+    } else {
+        // If headers were sent (e.g., during streaming), just end the response.
+        res.end();
     }
   }
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Express error:', err.stack);
-  res.status(500).json({
-    error: {
-      message: 'Internal server error',
-      type: 'server_error'
-    }
-  });
+  // Modified: Use toLocaleString() to output local time
+  console.error(`[${new Date().toLocaleString()}] Express error:`, err.stack);
+  if (!res.headersSent) { // Check if headers have been sent
+    res.status(500).json({
+      error: {
+        message: 'Internal server error',
+        type: 'server_error'
+      }
+    });
+  } else {
+    // If headers have been sent (e.g., during streaming), try to end the response
+    res.end();
+  }
 });
 
 // Start the server
@@ -353,7 +441,8 @@ const argv = yargs(hideBin(process.argv))
   .parse();
 
 const server = app.listen(argv.port, argv.host, () => {
-  console.log(`Server running at http://${argv.host}:${argv.port}`);
+  // Modified: Use toLocaleString() to output local time
+  console.log(`[${new Date().toLocaleString()}] Server running at http://${argv.host}:${argv.port}`);
 });
 
 // Set timeout to 5 minutes to handle long requests
@@ -366,18 +455,21 @@ process.on('exit', () => {
   } catch (e) {
     // Ignore possible errors
   }
-  console.log('Server shutting down, resources freed');
+  // Modified: Use toLocaleString() to output local time
+  console.log(`[${new Date().toLocaleString()}] Server shutting down, resources freed`);
 });
 
 process.on('SIGINT', () => {
-  console.log('Received SIGINT, shutting down');
+  // Modified: Use toLocaleString() to output local time
+  console.log(`[${new Date().toLocaleString()}] Received SIGINT, shutting down`);
   server.close(() => {
     process.exit(0);
   });
 });
 
 process.on('SIGTERM', () => {
-  console.log('Received SIGTERM, shutting down');
+  // Modified: Use toLocaleString() to output local time
+  console.log(`[${new Date().toLocaleString()}] Received SIGTERM, shutting down`);
   server.close(() => {
     process.exit(0);
   });
@@ -385,9 +477,14 @@ process.on('SIGTERM', () => {
 
 // Handle uncaught exceptions and rejections
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
+  // Modified: Use toLocaleString() to output local time
+  console.error(`[${new Date().toLocaleString()}] Uncaught exception:`, err);
+  // Consider gracefully closing the server here, or letting the process manager handle restarts
+  // process.exit(1); // Forcing exit may interrupt requests
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // Modified: Use toLocaleString() to output local time
+  console.error(`[${new Date().toLocaleString()}] Unhandled Rejection at:`, promise, 'reason:', reason);
+  // Similarly, consider whether to exit or log more details
 });

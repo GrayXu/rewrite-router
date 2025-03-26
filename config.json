@@ -30,12 +30,29 @@
         "o1-mini": {
             "stream": "false"
         },
+        "Qwen/QwQ-32B": {
+            "min_p": 0.0,
+            "top_p": 0.95,
+            "top_k": 40,
+            "frequency_penalty": 1.0
+        },
         "claude-3-7-sonnet-20250219-thinking": {
             "model": "claude-3-7-sonnet-20250219",
             "thinking": {
                 "type": "enabled",
                 "budget_tokens": 8192
             }
+        },
+        "gemini-2.5-pro-search": {
+            "model": "gemini-2.5-pro",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "googleSearch"
+                    }
+                }
+            ]
         },
         "gemini-2.0-pro-search": {
             "model": "gemini-2.0-pro",

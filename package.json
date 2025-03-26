@@ -3,6 +3,7 @@
     "@dqbd/tiktoken": "^1.0.20",
     "axios": "^1.8.3",
     "body-parser": "^1.20.3",
+    "chalk": "^4.1.2",
     "eventsource-parser": "^3.0.0",
     "express": "^4.21.2",
     "node-fetch": "^2.7.0",
