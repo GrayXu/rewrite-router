@@ -9,11 +9,11 @@ This is an OpenAI-compatible API router designed to:
 This proxy is suited for deployment in front of intermediary platforms like one-api, one-hub, or new-api.
 
 ```bash
+npm install
 # Edit `config.json` to match your specific needs.
 vim config.json
-node rewrite.js
+node rewrite.js --host-127.0.0.1 --port=3034
 ```
-
 
 ---
 
@@ -29,7 +29,8 @@ node rewrite.js
 您可以在 `config.json` 文件中自定义各种 Token 长度和模型的规则。
 
 ```bash
+npm install
 # 编辑 `config.json` 以匹配您的特定需求。
 vim config.json
-node rewrite.js
+node rewrite.js --host-127.0.0.1 --port=3034
 ```

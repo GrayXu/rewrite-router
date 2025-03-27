@@ -1,5 +1,6 @@
 {
     "BACKEND_URL": "http://localhost:3000",
+    // Route requests based on context token length
     "ROUTING_RULES": {
         "gpt-4o-auto": {
             "models": {
@@ -23,19 +24,23 @@
             "threshold": 0.7
         }
     },
+    // Rewrite params in requests
     "REWRITE_RULES": {
+        // rewirte max_tokens
         "yi-lightning": {
             "max_tokens": 5000
         },
-        "o1-mini": {
-            "stream": "false"
+        // Add derived models with different reasoning effort.
+        "o3-mini-low": {
+            "reasoning_effort": "low"
         },
-        "Qwen/QwQ-32B": {
-            "min_p": 0.0,
-            "top_p": 0.95,
-            "top_k": 40,
-            "frequency_penalty": 1.0
+        "o3-mini-medium": {
+            "reasoning_effort": "medium"
         },
+        "o3-mini-high": {
+            "reasoning_effort": "high"
+        },
+        // Add thinking for claude 3.7 thinking
         "claude-3-7-sonnet-20250219-thinking": {
             "model": "claude-3-7-sonnet-20250219",
             "thinking": {
@@ -43,6 +48,14 @@
                 "budget_tokens": 8192
             }
         },
+        // Force rewrite to use recommended inference parameters.
+        "Qwen/QwQ-32B": {
+            "min_p": 0.0,
+            "top_p": 0.95,
+            "top_k": 40,
+            "frequency_penalty": 1.0
+        },
+        // Add tool using
         "gemini-2.5-pro-search": {
             "model": "gemini-2.5-pro",
             "tools": [
@@ -87,7 +100,8 @@
                 }
             ]
         },
-        "test-with-sys-prompts": {
+        // insert prompts
+        "prompt-insert-model": {
             "message": [
                 {
                     "role": "system",

@@ -18,9 +18,11 @@ const tokenizer = new Tiktoken(
 );
 
 // Initialize configuration
+const stripJsonComments = require('strip-json-comments');
 let config;
 try {
-  config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
+  const configFile = fs.readFileSync('config.json', 'utf-8');
+  config = JSON.parse(stripJsonComments(configFile));
 } catch (error) {
   console.error('Failed to load config file:', error);
   process.exit(1);
