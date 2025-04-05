@@ -32,12 +32,15 @@
         },
         // Add derived models with different reasoning effort.
         "o3-mini-low": {
+            "model": "o3-mini",
             "reasoning_effort": "low"
         },
         "o3-mini-medium": {
+            "model": "o3-mini",
             "reasoning_effort": "medium"
         },
         "o3-mini-high": {
+            "model": "o3-mini",
             "reasoning_effort": "high"
         },
         // Add thinking for claude 3.7 thinking
