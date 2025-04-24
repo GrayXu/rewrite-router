@@ -2,6 +2,13 @@
     "BACKEND_URL": "http://localhost:3000",
     // Route requests based on context token length
     "ROUTING_RULES": {
+        "gpt-4.1-auto": {
+            "models": {
+                "8192": "gpt-4.1-8k",
+                "131072": "gpt-4.1"
+            },
+            "threshold": 0.65
+        },
         "gpt-4o-auto": {
             "models": {
                 "8192": "gpt-4o-8k",
@@ -30,17 +37,17 @@
         "yi-lightning": {
             "max_tokens": 5000
         },
+        // change model name for cursor
+        "cursor-model": {
+            "model": "gemini-2.5-pro"
+        },
         // Add derived models with different reasoning effort.
-        "o3-mini-low": {
-            "model": "o3-mini",
-            "reasoning_effort": "low"
-        },
-        "o3-mini-medium": {
-            "model": "o3-mini",
-            "reasoning_effort": "medium"
-        },
         "o3-mini-high": {
             "model": "o3-mini",
+            "reasoning_effort": "high"
+        },
+        "o4-mini-high": {
+            "model": "o4-mini",
             "reasoning_effort": "high"
         },
         // Add thinking for claude 3.7 thinking
@@ -51,6 +58,19 @@
                 "budget_tokens": 8192
             }
         },
+        // Add thinking for gemini-2.5-flash
+        "gemini-2.5-flash": {
+            "model": "gemini-2.5-flash",
+            "reasoning": {
+              "max_tokens": 0
+            }
+        },
+        "gemini-2.5-flash-thinking": {
+            "model": "gemini-2.5-flash",
+            "reasoning": {
+              "max_tokens": 16000
+            }
+        },
         // Force rewrite to use recommended inference parameters.
         "Qwen/QwQ-32B": {
             "min_p": 0.0,
@@ -59,6 +79,17 @@
             "frequency_penalty": 1.0
         },
         // Add tool using
+        "gemini-2.5-pro-tool": {
+            "model": "gemini-2.5-pro",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "codeExecution"
+                    }
+                }
+            ]
+        },
         "gemini-2.5-pro-search": {
             "model": "gemini-2.5-pro",
             "tools": [
@@ -102,15 +133,16 @@
                     }
                 }
             ]
-        },
-        // insert prompts
-        "prompt-insert-model": {
-            "message": [
-                {
-                    "role": "system",
-                    "content": "You are ChatGPT."
-                }
-            ]
         }
+        // ,
+        // // insert prompts
+        // "prompt-insert-model": {
+        //     "message": [
+        //         {
+        //             "role": "system",
+        //             "content": "You are ChatGPT."
+        //         }
+        //     ]
+        // }
     }
 }
