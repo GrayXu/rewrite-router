@@ -62,7 +62,7 @@
         "gemini-2.5-flash": {
             "model": "gemini-2.5-flash",
             "reasoning": {
-              "max_tokens": 0
+              "max_tokens": 1
             }
         },
         "gemini-2.5-flash-thinking": {
