@@ -6,13 +6,29 @@ This is an OpenAI-compatible API router designed to:
 - **Add system prompts**: Add system prompts to guide the model's behavior.
 - **Add tools**: Add tools, such as enabling Gemini's grounding search.
 - **Route requests based on context token length**: Similar to moonshot-v1-auto, it intelligently routes requests to different model endpoints (e.g., `moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k`) depending on the input's token count.
+
 This proxy is suited for deployment in front of intermediary platforms like one-api, one-hub, or new-api.
+
+## Go Version (Recommended for Lower Memory Usage)
+
+The Go version offers the same features as the Node.js version, but with significantly lower memory usage.
+
+```bash
+make build
+# Edit `config.json` to match your specific needs.
+vim config.json
+./rewrite-router --host=127.0.0.1 --port=3034
+```
+
+Usage and configuration are fully compatible with the Node.js version.
+
+## Node.js Version
 
 ```bash
 npm install
 # Edit `config.json` to match your specific needs.
 vim config.json
-node rewrite.js --host-127.0.0.1 --port=3034
+node rewrite.js --host=127.0.0.1 --port=3034
 ```
 
 ---
@@ -28,9 +44,24 @@ node rewrite.js --host-127.0.0.1 --port=3034
 
 您可以在 `config.json` 文件中自定义各种 Token 长度和模型的规则。
 
+## Go 版本（推荐，内存占用更低）
+
+Go 版本功能与 Node.js 版本一致，但内存占用更低。
+
+```bash
+make build
+# 编辑 `config.json` 以匹配您的特定需求。
+vim config.json
+./rewrite-router --host=127.0.0.1 --port=3034
+```
+
+用法和配置与 Node.js 版本完全兼容。
+
+## Node.js 版本
+
 ```bash
 npm install
 # 编辑 `config.json` 以匹配您的特定需求。
 vim config.json
-node rewrite.js --host-127.0.0.1 --port=3034
+node rewrite.js --host=127.0.0.1 --port=3034
 ```
