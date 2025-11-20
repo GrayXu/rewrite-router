@@ -33,6 +33,10 @@
     },
     // Rewrite params in requests
     "REWRITE_RULES": {
+        // remap
+        "gemini-2.5-flash": {
+            "model": "Qwen/Qwen3-Next-80B-A3B-Instruct"
+        },
         // rewirte max_tokens
         "yi-lightning": {
             "max_tokens": 5000
@@ -50,26 +54,48 @@
             "model": "o4-mini",
             "reasoning_effort": "high"
         },
+        "gpt-5-high": {
+            "model": "gpt-5",
+            "reasoning_effort": "high"
+        },
+        "gpt-5": {
+            "model": "gpt-5",
+            "reasoning_effort": "low"
+        },
         // Add thinking for claude 3.7 thinking
-        "claude-3-7-sonnet-20250219-thinking": {
-            "model": "claude-3-7-sonnet-20250219",
+        // "claude-3-7-sonnet-20250219-thinking": {
+        //     "model": "claude-3-7-sonnet-20250219",
+        //     "thinking": {
+        //         "type": "enabled",
+        //         "budget_tokens": 16000
+        //     }
+        // },
+        // "claude-sonnet-4-20250514-thinking": {
+        //     "model": "claude-sonnet-4-20250514-thinking",
+        //     "thinking": {
+        //         "type": "enabled",
+        //         "budget_tokens": 16000
+        //     }
+        // },
+        "deepseek-ai/DeepSeek-V3-1-terminus-thinking": {
+            "model": "deepseek-ai/DeepSeek-V3-1-terminus",
             "thinking": {
-                "type": "enabled",
-                "budget_tokens": 8192
+                "type": "enabled"
             }
         },
-        // Add thinking for gemini-2.5-flash
-        "gemini-2.5-flash": {
-            "model": "gemini-2.5-flash",
-            "reasoning": {
-              "max_tokens": 1
+        "deepseek-ai/DeepSeek-V3-1-0821-thinking": {
+            "model": "deepseek-ai/DeepSeek-V3-1-0821",
+            "thinking": {
+                "type": "enabled"
             }
         },
-        "gemini-2.5-flash-thinking": {
-            "model": "gemini-2.5-flash",
-            "reasoning": {
-              "max_tokens": 16000
-            }
+        "Qwen/Qwen3-235B-A22B": {
+            "enable_thinking": false
+        },
+        "Qwen/Qwen3-235B-A22B-thinking": {
+            "model": "Qwen/Qwen3-235B-A22B",
+            "enable_thinking": true,
+            "thinking_budget": 16000
         },
         // Force rewrite to use recommended inference parameters.
         "Qwen/QwQ-32B": {
@@ -78,60 +104,100 @@
             "top_k": 40,
             "frequency_penalty": 1.0
         },
-        // Add tool using
-        "gemini-2.5-pro-tool": {
+    // Add tool using
+        "gemini-2.5-pro": {
             "model": "gemini-2.5-pro",
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "codeExecution"
-                    }
-                }
-            ]
+            "reasoning": {"max_tokens": 128},
+            "tools": [{"type": "function", "function": {"name": "urlContext"}}]
         },
+        "gemini-2.5-pro-thinking": {
+            "model": "gemini-2.5-pro",
+            "reasoning": {"max_tokens": 16000},
+            "tools": [{"type": "function", "function": {"name": "urlContext"}}]
+        },
+        // 只search不展示来源
         "gemini-2.5-pro-search": {
             "model": "gemini-2.5-pro",
+            "reasoning": {"max_tokens": 8000},
             "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "googleSearch"
-                    }
-                }
+                {"type": "function", "function": {"name": "googleSearch"}}
+                // {"type": "function", "function": {"name": "urlContext"}}
             ]
         },
-        "gemini-2.0-pro-search": {
-            "model": "gemini-2.0-pro",
+        "gemini-2.5-pro-search-show": {
+            "model": "gemini-2.5-pro",
+            "reasoning": {"max_tokens": 128},
             "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "googleSearch"
-                    }
-                }
+                {"type": "function", "function": {"name": "googleSearch", "parameters": "show"}}
+                // {"type": "function", "function": {"name": "urlContext"}}
             ]
         },
-        "gemini-2.0-flash-search": {
-            "model": "gemini-2.0-flash",
+        "gemini-2.5-pro-search-show-thinking": {
+            "model": "gemini-2.5-pro",
+            "reasoning": {"max_tokens": 16000},
             "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "googleSearch"
-                    }
-                }
+                {"type": "function", "function": {"name": "googleSearch", "parameters": "show"}}
+                // {"type": "function", "function": {"name": "urlContext"}}
             ]
         },
-        "gemini-2.0-flash-thinking-search": {
-            "model": "gemini-2.0-flash-thinking",
+        "gemini-3-pro-preview": {
+            "model": "gemini-3-pro-preview",
+            "reasoning": {"max_tokens": 128},
+            "tools": [{"type": "function", "function": {"name": "urlContext"}}]
+        },
+        "gemini-3-pro-preview-thinking": {
+            "model": "gemini-3-pro-preview",
+            "reasoning": {"max_tokens": 16000},
+            "tools": [{"type": "function", "function": {"name": "urlContext"}}]
+        },
+        "gemini-3-pro-preview-search": {
+            "model": "gemini-3-pro-preview",
+            "reasoning": {"max_tokens": 8000},
             "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "googleSearch"
-                    }
-                }
+                {"type": "function", "function": {"name": "googleSearch"}}
+                // {"type": "function", "function": {"name": "urlContext"}}
+            ]
+        },
+        "gemini-3-pro-preview-search-show": {
+            "model": "gemini-3-pro-preview",
+            "reasoning": {"max_tokens": 128},
+            "tools": [
+                {"type": "function", "function": {"name": "googleSearch", "parameters": "show"}}
+                // {"type": "function", "function": {"name": "urlContext"}}
+            ]
+        },
+        "gemini-3-pro-preview-search-show-thinking": {
+            "model": "gemini-3-pro-preview",
+            "reasoning": {"max_tokens": 16000},
+            "tools": [
+                {"type": "function", "function": {"name": "googleSearch", "parameters": "show"}}
+                // {"type": "function", "function": {"name": "urlContext"}}
+            ]
+        },
+        "gemini-flash-latest": {
+            "model": "gemini-flash-latest",
+            "reasoning": {"max_tokens": 0},
+            "tools": [{"type": "function", "function": {"name": "urlContext"}}]
+        },
+        "gemini-flash-latest-thinking": {
+            "model": "gemini-flash-latest",
+            "reasoning": {"max_tokens": 16000},
+            "tools": [{"type": "function", "function": {"name": "urlContext"}}]
+        },
+        "gemini-flash-latest-search": {
+            "model": "gemini-flash-latest",
+            "reasoning": {"max_tokens": 128},
+            "tools": [
+                {"type": "function", "function": {"name": "googleSearch"}}
+                // {"type": "function", "function": {"name": "urlContext"}}
+            ]
+        },
+        "gemini-flash-latest-search-thinking": {
+            "model": "gemini-flash-latest",
+            "reasoning": {"max_tokens": 16000},
+            "tools": [
+                {"type": "function", "function": {"name": "googleSearch"}}
+                // {"type": "function", "function": {"name": "urlContext"}}
             ]
         }
         // ,

@@ -2,540 +2,469 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
-	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/pkoukk/tiktoken-go"
 )
 
-// Configuration structures
-type Config struct {
-	BackendURL   string                 `json:"BACKEND_URL"`
-	RewriteRules map[string]RewriteRule `json:"REWRITE_RULES"`
-	RoutingRules map[string]RoutingRule `json:"ROUTING_RULES"`
-}
-
-type RewriteRule struct {
-	Message []ChatMessage          `json:"message,omitempty"`
-	Tools   []interface{}          `json:"tools,omitempty"`
-	Stream  *string                `json:"stream,omitempty"`
-	Model   string                 `json:"model,omitempty"`
-	Extra   map[string]interface{} // For any additional fields
-}
+// --- Configuration Structures ---
 
 type RoutingRule struct {
 	Models    map[string]string `json:"models"`
 	Threshold float64           `json:"threshold"`
 }
 
-type ChatMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"`
-	Name    string      `json:"name,omitempty"`
+type RewriteRules map[string]interface{}
+
+type Config struct {
+	BackendURL   string                 `json:"BACKEND_URL"`
+	RoutingRules map[string]RoutingRule `json:"ROUTING_RULES"`
+	RewriteRules map[string]RewriteRules `json:"REWRITE_RULES"`
 }
 
-type ChatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Stream      *bool         `json:"stream,omitempty"`
-	Tools       []interface{} `json:"tools,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	MaxTokens   *int          `json:"max_tokens,omitempty"`
-	// Add other fields as needed
-	Extra map[string]interface{} `json:"-"`
-}
+// --- Global Variables ---
 
-type ModelResponse struct {
-	Object string  `json:"object"`
-	Data   []Model `json:"data"`
-}
-
-type Model struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
-}
-
-// Global variables
 var (
 	config    Config
-	redColor  = color.New(color.FgRed)
 	tokenizer *tiktoken.Tiktoken
 )
 
-func init() {
-	// Initialize tokenizer
-	var err error
-	tokenizer, err = tiktoken.GetEncoding("cl100k_base")
-	if err != nil {
-		log.Printf("Failed to initialize tokenizer: %v", err)
-	}
-}
+// --- Token Counting Helper ---
 
-// Token counting functions
 func getTokenCount(text string) int {
-	if text == "" {
-		return 0
-	}
-
 	if tokenizer == nil {
 		return 0
 	}
-
 	tokens := tokenizer.Encode(text, nil, nil)
 	return len(tokens)
 }
 
-func getMessagesTokenCount(messages []ChatMessage) int {
-	if len(messages) == 0 {
-		return 0
+// Message represents a chat message
+type Message struct {
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // Can be string or array of objects
+}
+
+// ChatRequest represents the incoming request body for /v1/chat/completions
+// We use map[string]interface{} for flexibility in rewriting, but specific structs for logic
+type ChatRequest struct {
+	Model    string      `json:"model"`
+	Messages []Message   `json:"messages"`
+	Stream   bool        `json:"stream"`
+	Tools    []interface{} `json:"tools,omitempty"`
+	// Capture other fields to preserve them
+	Other map[string]interface{} `json:"-"`
+}
+
+// Custom Unmarshal to handle "Other" fields
+func (c *ChatRequest) UnmarshalJSON(data []byte) error {
+	type Alias ChatRequest
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
 	}
 
-	totalTokens := 2      // Base format overhead
-	perMessageTokens := 4 // Role marker tokens
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+
+	// Remove known fields from map
+	delete(m, "model")
+	delete(m, "messages")
+	delete(m, "stream")
+	delete(m, "tools")
+	c.Other = m
+	return nil
+}
+
+func (c ChatRequest) MarshalJSON() ([]byte, error) {
+	type Alias ChatRequest
+	// Create a map combining specific fields and Other
+	m := make(map[string]interface{})
+	for k, v := range c.Other {
+		m[k] = v
+	}
+	m["model"] = c.Model
+	m["messages"] = c.Messages
+	m["stream"] = c.Stream
+	if c.Tools != nil {
+		m["tools"] = c.Tools
+	}
+	return json.Marshal(m)
+}
+
+func getMessagesTokenCount(messages []Message) int {
+	totalTokens := 2 // Base format overhead
+	perMessageTokens := 4
 
 	for _, msg := range messages {
 		totalTokens += perMessageTokens
-
-		switch content := msg.Content.(type) {
+		
+		// Handle Content which can be string or array
+		var textContent string
+		switch v := msg.Content.(type) {
 		case string:
-			totalTokens += getTokenCount(content)
+			textContent = v
 		case []interface{}:
-			combinedText := ""
-			for _, part := range content {
+			for _, part := range v {
 				if partMap, ok := part.(map[string]interface{}); ok {
 					if text, ok := partMap["text"].(string); ok {
-						combinedText += text
+						textContent += text
 					}
 				}
 			}
-			totalTokens += getTokenCount(combinedText)
 		}
+		totalTokens += getTokenCount(textContent)
 	}
-
 	return totalTokens
 }
 
-func selectModel(messages []ChatMessage, routing RoutingRule) string {
-	if len(routing.Models) == 0 || routing.Threshold == 0 {
-		log.Printf("Invalid model routing configuration")
+// --- Logic Functions ---
+
+func selectModel(messages []Message, rule RoutingRule) string {
+	if len(rule.Models) == 0 || rule.Threshold == 0 {
 		return ""
 	}
 
 	tokenCount := getMessagesTokenCount(messages)
 
-	// Sort context lengths
-	var contextLengths []int
-	for lengthStr := range routing.Models {
-		if length, err := strconv.Atoi(lengthStr); err == nil {
-			contextLengths = append(contextLengths, length)
+	// Extract lengths and sort
+	var lengths []int
+	lengthToModel := make(map[int]string)
+	for k, v := range rule.Models {
+		l, err := strconv.Atoi(k)
+		if err == nil {
+			lengths = append(lengths, l)
+			lengthToModel[l] = v
+		}
+	}
+	sort.Ints(lengths)
+
+	for _, length := range lengths {
+		if float64(tokenCount) <= float64(length)*rule.Threshold {
+			return lengthToModel[length]
 		}
 	}
 
-	// Simple bubble sort
-	for i := 0; i < len(contextLengths)-1; i++ {
-		for j := 0; j < len(contextLengths)-i-1; j++ {
-			if contextLengths[j] > contextLengths[j+1] {
-				contextLengths[j], contextLengths[j+1] = contextLengths[j+1], contextLengths[j]
+	// Return largest model if none match
+	if len(lengths) > 0 {
+		return lengthToModel[lengths[len(lengths)-1]]
+	}
+	return ""
+}
+
+// --- Comment Stripping ---
+
+func loadConfig(filename string) error {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+
+	// Simple state machine to strip // comments while respecting strings
+	var cleanLines []string
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		var cleanLine []rune
+		inString := false
+		escape := false
+		
+		runes := []rune(line)
+		skipRest := false
+		
+		for i := 0; i < len(runes); i++ {
+			c := runes[i]
+			
+			if inString {
+				if escape {
+					escape = false
+				} else if c == '\\' {
+					escape = true
+				} else if c == '"' {
+					inString = false
+				}
+			} else {
+				if c == '"' {
+					inString = true
+				} else if c == '/' && i+1 < len(runes) && runes[i+1] == '/' {
+					skipRest = true
+					break
+				}
+			}
+			cleanLine = append(cleanLine, c)
+		}
+		
+		if !skipRest {
+			cleanLines = append(cleanLines, string(cleanLine))
+		} else {
+			cleanLines = append(cleanLines, string(cleanLine))
+		}
+	}
+	cleanJson := strings.Join(cleanLines, "\n")
+
+	err = json.Unmarshal([]byte(cleanJson), &config)
+	if err != nil {
+		return fmt.Errorf("json parse error: %v", err)
+	}
+	return nil
+}
+
+// --- Handlers ---
+
+func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[%s] Received chat completions request: %s", time.Now().Format(time.RFC3339), r.Header.Get("Content-Type"))
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		return
+	}
+	
+	var chatReq ChatRequest
+	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
+		log.Printf("Failed to parse JSON: %v", err)
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Request model: %s", chatReq.Model)
+
+	// 1. Auto-routing
+	if rule, ok := config.RoutingRules[chatReq.Model]; ok {
+		newModel := selectModel(chatReq.Messages, rule)
+		if newModel != "" {
+			log.Printf("Auto-routing: %s -> %s", chatReq.Model, newModel)
+			chatReq.Model = newModel
+		}
+	}
+
+	// 2. Rewrite rules
+	if rules, ok := config.RewriteRules[chatReq.Model]; ok {
+		log.Printf("Applying rewrite rules for %s", chatReq.Model)
+		for key, value := range rules {
+			switch key {
+			case "message":
+				// Prepend messages
+				// value should be []interface{} (array of messages)
+				if msgs, ok := value.([]interface{}); ok {
+					// Convert interface{} to Message structs
+					var newMsgs []Message
+					tempBytes, _ := json.Marshal(msgs)
+					json.Unmarshal(tempBytes, &newMsgs)
+					
+					chatReq.Messages = append(newMsgs, chatReq.Messages...)
+				}
+			case "tools":
+				// Append tools
+				if tools, ok := value.([]interface{}); ok {
+					chatReq.Tools = append(chatReq.Tools, tools...)
+				}
+			case "stream":
+				if s, ok := value.(string); ok && s == "false" {
+					chatReq.Stream = false
+				} else if b, ok := value.(bool); ok && !b {
+					chatReq.Stream = false
+				}
+			case "model":
+				if s, ok := value.(string); ok {
+					chatReq.Model = s
+				}
+			default:
+				// Generic rewrite for other fields
+				log.Printf("\t\trewrite rule: %s = %v", key, value)
+				chatReq.Other[key] = value
 			}
 		}
 	}
 
-	for _, length := range contextLengths {
-		if float64(tokenCount) <= float64(length)*routing.Threshold {
-			return routing.Models[strconv.Itoa(length)]
-		}
-	}
-
-	// Return model for maximum context length
-	maxLength := contextLengths[len(contextLengths)-1]
-	return routing.Models[strconv.Itoa(maxLength)]
-}
-
-// HTTP handlers
-func chatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	log.Printf("[%s] Received chat completions request: %s", timestamp, r.Header.Get("Content-Type"))
-
-	// Parse request body
-	body, err := io.ReadAll(r.Body)
+	// Prepare forward request
+	newBody, err := chatReq.MarshalJSON()
 	if err != nil {
-		log.Printf("[%s] Failed to read request body: %v", timestamp, err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	var data ChatCompletionRequest
-	if err := json.Unmarshal(body, &data); err != nil {
-		log.Printf("[%s] Failed to parse request body as JSON: %v", timestamp, err)
-		http.Error(w, "Invalid JSON in request body", http.StatusBadRequest)
+		http.Error(w, "Failed to remarshal body", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[%s] Request model: %s", timestamp, redColor.Sprint(data.Model))
+	log.Printf("Forwarding data to backend")
 
-	// Handle automatic model routing
-	if routingRule, exists := config.RoutingRules[data.Model]; exists {
-		selectedModel := selectModel(data.Messages, routingRule)
-		if selectedModel != "" {
-			log.Printf("[%s] Auto-routing: %s -> %s", timestamp, redColor.Sprint(data.Model), redColor.Sprint(selectedModel))
-			data.Model = selectedModel
-		}
-	}
-
-	// Apply rewrite rules
-	if rewriteRule, exists := config.RewriteRules[data.Model]; exists {
-		log.Printf("[%s] Applying rewrite rules for %s", timestamp, redColor.Sprint(data.Model))
-
-		if len(rewriteRule.Message) > 0 {
-			data.Messages = append(rewriteRule.Message, data.Messages...)
-		}
-
-		if len(rewriteRule.Tools) > 0 {
-			data.Tools = append(data.Tools, rewriteRule.Tools...)
-		}
-
-		if rewriteRule.Stream != nil && *rewriteRule.Stream == "false" {
-			streamFalse := false
-			data.Stream = &streamFalse
-		}
-
-		if rewriteRule.Model != "" {
-			log.Printf("[%s] \t\trewrite rule: model = %s", timestamp, rewriteRule.Model)
-			data.Model = rewriteRule.Model
-		}
-
-		// Apply extra fields
-		for key, value := range rewriteRule.Extra {
-			log.Printf("[%s] \t\trewrite rule: %s = %v", timestamp, key, value)
-			// This would need custom marshaling to handle properly
-		}
-	}
-
-	// Forward request to backend
-	jsonData, err := json.Marshal(data)
+	targetURL := config.BackendURL + "/v1/chat/completions"
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(newBody))
 	if err != nil {
-		log.Printf("[%s] Failed to marshal request data: %v", timestamp, err)
-		http.Error(w, "Failed to process request", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("[%s] Forwarding data: %s", timestamp, string(jsonData))
-
-	// Create request to backend
-	req, err := http.NewRequest("POST", config.BackendURL+"/v1/chat/completions", bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Printf("[%s] Failed to create backend request: %v", timestamp, err)
-		http.Error(w, "Failed to create backend request", http.StatusInternalServerError)
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
 	}
 
 	// Copy headers
-	for key, values := range r.Header {
-		if key != "Host" && key != "Content-Length" {
-			for _, value := range values {
-				req.Header.Add(key, value)
-			}
+	for k, v := range r.Header {
+		if k != "Host" && k != "Content-Length" {
+			proxyReq.Header[k] = v
 		}
 	}
-	req.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("Content-Type", "application/json")
 
-	// Make request to backend
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Do(req)
+	client := &http.Client{
+		Timeout: 5 * time.Minute,
+	}
+	resp, err := client.Do(proxyReq)
 	if err != nil {
-		log.Printf("[%s] Error forwarding request to backend: %v", timestamp, err)
-		http.Error(w, "Error forwarding request to backend", http.StatusBadGateway)
+		log.Printf("Proxy error: %v", err)
+		http.Error(w, "Error forwarding request", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	// Copy response headers
-	for key, values := range resp.Header {
-		if key != "Content-Encoding" && key != "Transfer-Encoding" && key != "Connection" {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
+	for k, v := range resp.Header {
+		if k != "Content-Encoding" && k != "Transfer-Encoding" {
+			w.Header()[k] = v
 		}
 	}
-
 	w.WriteHeader(resp.StatusCode)
 
-	// Handle streaming response
-	if data.Stream != nil && *data.Stream {
-		// Stream response
-		io.Copy(w, resp.Body)
-	} else {
-		// Non-streaming response
-		io.Copy(w, resp.Body)
+	// Stream or copy body
+	// For simplicity and efficiency in Go, we can just copy the stream directly.
+	// This handles both streaming and non-streaming seamlessly.
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		log.Printf("Error copying response: %v", err)
 	}
 }
 
-func modelsHandler(w http.ResponseWriter, r *http.Request) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-
-	// Create request to backend
-	req, err := http.NewRequest("GET", config.BackendURL+"/v1/models", nil)
+func handleModels(w http.ResponseWriter, r *http.Request) {
+	targetURL := config.BackendURL + "/v1/models"
+	proxyReq, err := http.NewRequest("GET", targetURL, nil)
 	if err != nil {
-		log.Printf("[%s] Failed to create backend request: %v", timestamp, err)
-		http.Error(w, "Failed to create backend request", http.StatusInternalServerError)
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
 	}
 
 	// Copy headers
-	for key, values := range r.Header {
-		if key != "Host" {
-			for _, value := range values {
-				req.Header.Add(key, value)
-			}
+	for k, v := range r.Header {
+		if k != "Host" {
+			proxyReq.Header[k] = v
 		}
 	}
 
-	// Make request to backend
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(proxyReq)
 	if err != nil {
-		log.Printf("[%s] Error fetching models from backend: %v", timestamp, err)
-		http.Error(w, "Error connecting to backend", http.StatusBadGateway)
+		log.Printf("Error fetching models: %v", err)
+		http.Error(w, "Error fetching models", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[%s] Backend returned error: %d", timestamp, resp.StatusCode)
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 		return
 	}
 
-	var modelResponse ModelResponse
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("[%s] Failed to read backend response: %v", timestamp, err)
-		http.Error(w, "Failed to read backend response", http.StatusInternalServerError)
-		return
+	var respData struct {
+		Object string                   `json:"object"`
+		Data   []map[string]interface{} `json:"data"`
 	}
 
-	if err := json.Unmarshal(responseBody, &modelResponse); err != nil {
-		log.Printf("[%s] Invalid response format from backend: %v", timestamp, err)
+	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+		log.Printf("Invalid response from backend: %v", err)
 		http.Error(w, "Invalid response from backend", http.StatusInternalServerError)
 		return
 	}
 
-	// Merge model list
-	modelList := modelResponse.Data
+	// Logic to add virtual models
+	existingIds := make(map[string]bool)
+	for _, m := range respData.Data {
+		if id, ok := m["id"].(string); ok {
+			existingIds[id] = true
+		}
+	}
+
 	created := int64(1677649963)
-	if len(modelList) > 0 {
-		created = modelList[0].Created
+	if len(respData.Data) > 0 {
+		if c, ok := respData.Data[0]["created"].(float64); ok {
+			created = int64(c)
+		}
 	}
 
-	// Add models from routing rules
-	for modelName := range config.RoutingRules {
-		found := false
-		for _, model := range modelList {
-			if model.ID == modelName {
-				found = true
-				break
-			}
-		}
-		if !found {
-			modelList = append(modelList, Model{
-				ID:      modelName,
-				Object:  "model",
-				Created: created,
-				OwnedBy: "routing",
+	addModel := func(name string, owner string) {
+		if !existingIds[name] {
+			respData.Data = append(respData.Data, map[string]interface{}{
+				"id":       name,
+				"object":   "model",
+				"created":  created,
+				"owned_by": owner,
 			})
+			existingIds[name] = true
 		}
 	}
 
-	// Add models from rewrite rules
-	for modelName := range config.RewriteRules {
-		found := false
-		for _, model := range modelList {
-			if model.ID == modelName {
-				found = true
-				break
-			}
-		}
-		if !found {
-			modelList = append(modelList, Model{
-				ID:      modelName,
-				Object:  "model",
-				Created: created,
-				OwnedBy: "rewrite",
-			})
-		}
+	for name := range config.RoutingRules {
+		addModel(name, "routing")
 	}
-
-	modelResponse.Data = modelList
+	for name := range config.RewriteRules {
+		addModel(name, "rewrite")
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(modelResponse)
+	json.NewEncoder(w).Encode(respData)
 }
 
-func proxyHandler(w http.ResponseWriter, r *http.Request) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	log.Printf("[%s] Proxying %s request to: %s", timestamp, r.Method, r.URL.Path)
+func handleProxy(w http.ResponseWriter, r *http.Request) {
+	targetURL, _ := url.Parse(config.BackendURL)
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	
+	// Update the headers to allow for SSL redirection
+	r.URL.Host = targetURL.Host
+	r.URL.Scheme = targetURL.Scheme
+	r.Header.Set("X-Forwarded-Host", r.Header.Get("Host"))
+	r.Host = targetURL.Host
 
-	// Read request body
-	var bodyBytes []byte
-	if r.Body != nil {
-		var err error
-		bodyBytes, err = io.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("[%s] Failed to read request body: %v", timestamp, err)
-			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-			return
-		}
-		r.Body.Close()
-	}
-
-	// Create request to backend
-	targetURL := config.BackendURL + r.URL.String()
-	log.Printf("[%s] Forwarding to: %s", timestamp, targetURL)
-
-	req, err := http.NewRequest(r.Method, targetURL, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		log.Printf("[%s] Failed to create backend request: %v", timestamp, err)
-		http.Error(w, "Failed to create backend request", http.StatusInternalServerError)
-		return
-	}
-
-	// Copy headers
-	for key, values := range r.Header {
-		if key != "Host" && key != "Content-Length" {
-			for _, value := range values {
-				req.Header.Add(key, value)
-			}
-		}
-	}
-
-	// Make request to backend
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("[%s] Proxy error: %v", timestamp, err)
-		http.Error(w, "Error proxying request to backend", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	log.Printf("[%s] Backend response status: %d", timestamp, resp.StatusCode)
-
-	// Copy response headers
-	for key, values := range resp.Header {
-		if key != "Content-Encoding" && key != "Transfer-Encoding" && key != "Connection" {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-	}
-
-	w.WriteHeader(resp.StatusCode)
-
-	// Handle response body
-	contentType := resp.Header.Get("Content-Type")
-	if strings.Contains(contentType, "text/event-stream") {
-		// Stream response
-		log.Printf("[%s] Piping streaming response for Content-Type: %s", timestamp, contentType)
-		io.Copy(w, resp.Body)
-	} else {
-		// Buffer response
-		io.Copy(w, resp.Body)
-	}
-}
-
-func loadConfig() error {
-	file, err := os.Open("config.json")
-	if err != nil {
-		return fmt.Errorf("failed to open config file: %v", err)
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return fmt.Errorf("failed to read config file: %v", err)
-	}
-
-	// Remove comments (basic implementation)
-	lines := strings.Split(string(data), "\n")
-	var cleanLines []string
-	for _, line := range lines {
-		if trimmed := strings.TrimSpace(line); !strings.HasPrefix(trimmed, "//") {
-			cleanLines = append(cleanLines, line)
-		}
-	}
-	cleanData := strings.Join(cleanLines, "\n")
-
-	if err := json.Unmarshal([]byte(cleanData), &config); err != nil {
-		return fmt.Errorf("failed to parse config JSON: %v", err)
-	}
-
-	return nil
+	proxy.ServeHTTP(w, r)
 }
 
 func main() {
-	var host = flag.String("host", "127.0.0.1", "Host to bind to")
-	var port = flag.Int("port", 3034, "Port to bind to")
+	host := flag.String("host", "127.0.0.1", "Host to listen on")
+	port := flag.Int("port", 3034, "Port to listen on")
 	flag.Parse()
 
-	// Load configuration
-	if err := loadConfig(); err != nil {
+	if err := loadConfig("config.json"); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Setup routes
-	http.HandleFunc("/v1/chat/completions", chatCompletionsHandler)
-	http.HandleFunc("/v1/models", modelsHandler)
-	http.HandleFunc("/", proxyHandler)
-
-	// Create server
-	addr := fmt.Sprintf("%s:%d", *host, *port)
-	server := &http.Server{
-		Addr:         addr,
-		ReadTimeout:  5 * time.Minute,
-		WriteTimeout: 5 * time.Minute,
-		IdleTimeout:  60 * time.Second,
+	// Initialize tokenizer
+	var err error
+	tokenizer, err = tiktoken.GetEncoding("cl100k_base")
+	if err != nil {
+		log.Fatalf("Failed to initialize tokenizer: %v", err)
 	}
 
-	// Start server in goroutine
-	go func() {
-		timestamp := time.Now().Format("2006-01-02 15:04:05")
-		log.Printf("[%s] Server running at http://%s", timestamp, addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v", err)
-		}
-	}()
+	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	http.HandleFunc("/v1/models", handleModels)
+	
+	// Catch-all for other routes
+	http.HandleFunc("/", handleProxy)
 
-	// Wait for interrupt signal to gracefully shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	log.Printf("[%s] Received shutdown signal, shutting down", timestamp)
-
-	// Graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown: %v", err)
-	} else {
-		log.Printf("[%s] Server shutting down, resources freed", timestamp)
+	addr := fmt.Sprintf("%s:%d", *host, *port)
+	log.Printf("Server running at http://%s", addr)
+	
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Fatalf("Server failed: %v", err)
 	}
 }
