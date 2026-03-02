@@ -3,3 +3,5 @@ __pycache__/*
 *.py
 node_modules/*
 rewrite-router
+AGENTS.md
+config.json

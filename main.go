@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkoukk/tiktoken-go"
@@ -29,17 +30,26 @@ type RoutingRule struct {
 type RewriteRules map[string]interface{}
 
 type Config struct {
-	BackendURL   string                 `json:"BACKEND_URL"`
-	RoutingRules map[string]RoutingRule `json:"ROUTING_RULES"`
+	BackendURL   string                  `json:"BACKEND_URL"`
+	RoutingRules map[string]RoutingRule  `json:"ROUTING_RULES"`
 	RewriteRules map[string]RewriteRules `json:"REWRITE_RULES"`
 }
 
 // --- Global Variables ---
 
 var (
-	config    Config
+	configVal atomic.Value
 	tokenizer *tiktoken.Tiktoken
 )
+
+const (
+	colorGreen = "\033[32m"
+	colorReset = "\033[0m"
+)
+
+func colorModel(name string) string {
+	return colorGreen + name + colorReset
+}
 
 // --- Token Counting Helper ---
 
@@ -60,9 +70,9 @@ type Message struct {
 // ChatRequest represents the incoming request body for /v1/chat/completions
 // We use map[string]interface{} for flexibility in rewriting, but specific structs for logic
 type ChatRequest struct {
-	Model    string      `json:"model"`
-	Messages []Message   `json:"messages"`
-	Stream   bool        `json:"stream"`
+	Model    string        `json:"model"`
+	Messages []Message     `json:"messages"`
+	Stream   bool          `json:"stream"`
 	Tools    []interface{} `json:"tools,omitempty"`
 	// Capture other fields to preserve them
 	Other map[string]interface{} `json:"-"`
@@ -116,7 +126,7 @@ func getMessagesTokenCount(messages []Message) int {
 
 	for _, msg := range messages {
 		totalTokens += perMessageTokens
-		
+
 		// Handle Content which can be string or array
 		var textContent string
 		switch v := msg.Content.(type) {
@@ -172,10 +182,20 @@ func selectModel(messages []Message, rule RoutingRule) string {
 
 // --- Comment Stripping ---
 
-func loadConfig(filename string) error {
+func getConfig() Config {
+	v := configVal.Load()
+	if v == nil {
+		return Config{}
+	}
+	return v.(Config)
+}
+
+func loadConfig(filename string) (Config, error) {
+	var cfg Config
+
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		return err
+		return cfg, err
 	}
 
 	// Simple state machine to strip // comments while respecting strings
@@ -186,13 +206,13 @@ func loadConfig(filename string) error {
 		var cleanLine []rune
 		inString := false
 		escape := false
-		
+
 		runes := []rune(line)
 		skipRest := false
-		
+
 		for i := 0; i < len(runes); i++ {
 			c := runes[i]
-			
+
 			if inString {
 				if escape {
 					escape = false
@@ -211,7 +231,7 @@ func loadConfig(filename string) error {
 			}
 			cleanLine = append(cleanLine, c)
 		}
-		
+
 		if !skipRest {
 			cleanLines = append(cleanLines, string(cleanLine))
 		} else {
@@ -220,11 +240,62 @@ func loadConfig(filename string) error {
 	}
 	cleanJson := strings.Join(cleanLines, "\n")
 
-	err = json.Unmarshal([]byte(cleanJson), &config)
+	err = json.Unmarshal([]byte(cleanJson), &cfg)
 	if err != nil {
-		return fmt.Errorf("json parse error: %v", err)
+		return cfg, fmt.Errorf("json parse error: %v", err)
 	}
+	return cfg, nil
+}
+
+func updateConfig(filename string) error {
+	cfg, err := loadConfig(filename)
+	if err != nil {
+		return err
+	}
+
+	configVal.Store(cfg)
 	return nil
+}
+
+func getFileFingerprint(filename string) (string, error) {
+	info, err := os.Stat(filename)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d-%d", info.ModTime().UnixNano(), info.Size()), nil
+}
+
+func startConfigReloader(filename string, interval time.Duration) {
+	go func() {
+		lastFingerprint, err := getFileFingerprint(filename)
+		if err != nil {
+			log.Printf("Failed to read config metadata: %v", err)
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			fingerprint, err := getFileFingerprint(filename)
+			if err != nil {
+				log.Printf("Failed to stat config file: %v", err)
+				continue
+			}
+
+			if fingerprint == lastFingerprint {
+				continue
+			}
+
+			if err := updateConfig(filename); err != nil {
+				log.Printf("Config reload skipped due to invalid file: %v", err)
+				lastFingerprint = fingerprint
+				continue
+			}
+
+			lastFingerprint = fingerprint
+			log.Printf("Config reloaded from %s", filename)
+		}
+	}()
 }
 
 // --- Handlers ---
@@ -237,7 +308,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
 	}
-	
+
 	var chatReq ChatRequest
 	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
 		log.Printf("Failed to parse JSON: %v", err)
@@ -245,20 +316,22 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Request model: %s", chatReq.Model)
+	log.Printf("Request model: %s", colorModel(chatReq.Model))
+
+	cfg := getConfig()
 
 	// 1. Auto-routing
-	if rule, ok := config.RoutingRules[chatReq.Model]; ok {
+	if rule, ok := cfg.RoutingRules[chatReq.Model]; ok {
 		newModel := selectModel(chatReq.Messages, rule)
 		if newModel != "" {
-			log.Printf("Auto-routing: %s -> %s", chatReq.Model, newModel)
+			log.Printf("Auto-routing: %s -> %s", colorModel(chatReq.Model), colorModel(newModel))
 			chatReq.Model = newModel
 		}
 	}
 
 	// 2. Rewrite rules
-	if rules, ok := config.RewriteRules[chatReq.Model]; ok {
-		log.Printf("Applying rewrite rules for %s", chatReq.Model)
+	if rules, ok := cfg.RewriteRules[chatReq.Model]; ok {
+		log.Printf("Applying rewrite rules for %s", colorModel(chatReq.Model))
 		for key, value := range rules {
 			switch key {
 			case "message":
@@ -269,7 +342,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					var newMsgs []Message
 					tempBytes, _ := json.Marshal(msgs)
 					json.Unmarshal(tempBytes, &newMsgs)
-					
+
 					chatReq.Messages = append(newMsgs, chatReq.Messages...)
 				}
 			case "tools":
@@ -304,7 +377,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Forwarding data to backend")
 
-	targetURL := config.BackendURL + "/v1/chat/completions"
+	targetURL := cfg.BackendURL + "/v1/chat/completions"
 	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(newBody))
 	if err != nil {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
@@ -338,17 +411,35 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	// Stream or copy body
-	// For simplicity and efficiency in Go, we can just copy the stream directly.
-	// This handles both streaming and non-streaming seamlessly.
-	_, err = io.Copy(w, resp.Body)
+	// Stream or copy body with flushing to avoid buffering streaming responses
+	writer := io.Writer(w)
+	if flusher, ok := w.(http.Flusher); ok {
+		writer = flushWriter{ResponseWriter: w, Flusher: flusher}
+	}
+
+	_, err = io.Copy(writer, resp.Body)
 	if err != nil {
 		log.Printf("Error copying response: %v", err)
 	}
 }
 
+// flushWriter forces a flush after each write to support streaming responses.
+type flushWriter struct {
+	http.ResponseWriter
+	http.Flusher
+}
+
+func (fw flushWriter) Write(p []byte) (int, error) {
+	n, err := fw.ResponseWriter.Write(p)
+	if err == nil {
+		fw.Flush()
+	}
+	return n, err
+}
+
 func handleModels(w http.ResponseWriter, r *http.Request) {
-	targetURL := config.BackendURL + "/v1/models"
+	cfg := getConfig()
+	targetURL := cfg.BackendURL + "/v1/models"
 	proxyReq, err := http.NewRequest("GET", targetURL, nil)
 	if err != nil {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
@@ -415,10 +506,10 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for name := range config.RoutingRules {
+	for name := range cfg.RoutingRules {
 		addModel(name, "routing")
 	}
-	for name := range config.RewriteRules {
+	for name := range cfg.RewriteRules {
 		addModel(name, "rewrite")
 	}
 
@@ -427,9 +518,14 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
-	targetURL, _ := url.Parse(config.BackendURL)
+	cfg := getConfig()
+	targetURL, err := url.Parse(cfg.BackendURL)
+	if err != nil {
+		http.Error(w, "Invalid backend URL", http.StatusInternalServerError)
+		return
+	}
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	
+
 	// Update the headers to allow for SSL redirection
 	r.URL.Host = targetURL.Host
 	r.URL.Scheme = targetURL.Scheme
@@ -444,9 +540,10 @@ func main() {
 	port := flag.Int("port", 3034, "Port to listen on")
 	flag.Parse()
 
-	if err := loadConfig("config.json"); err != nil {
+	if err := updateConfig("config.json"); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	startConfigReloader("config.json", 2*time.Second)
 
 	// Initialize tokenizer
 	var err error
@@ -457,13 +554,13 @@ func main() {
 
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
 	http.HandleFunc("/v1/models", handleModels)
-	
+
 	// Catch-all for other routes
 	http.HandleFunc("/", handleProxy)
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	log.Printf("Server running at http://%s", addr)
-	
+
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
