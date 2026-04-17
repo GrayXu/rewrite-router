@@ -5,6 +5,7 @@ This is an OpenAI-compatible API router designed to:
 - **Rewrite request parameters**: Adjust parameters sent in API requests.
 - **Add system prompts**: Add system prompts to guide the model's behavior.
 - **Add tools**: Add tools, such as enabling Gemini's grounding search.
+- **Support both Chat Completions and Responses rewrites**: The Go version can route and rewrite `POST /v1/chat/completions` and `POST /v1/responses` with the same model alias rules.
 - **Route requests based on context token length**: Similar to moonshot-v1-auto, it intelligently routes requests to different model endpoints (e.g., `moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k`) depending on the input's token count.
 
 This proxy is suited for deployment in front of intermediary platforms like one-api, one-hub, or new-api.
@@ -12,6 +13,7 @@ This proxy is suited for deployment in front of intermediary platforms like one-
 ## Go Version (Recommended for Lower Memory Usage)
 
 The Go version offers the same features as the Node.js version, but with significantly lower memory usage.
+It also supports rewrite/routing for `POST /v1/responses`. The Node.js version currently only proxies Responses requests through without applying rewrite/routing rules.
 
 ```bash
 make build
@@ -38,6 +40,7 @@ node rewrite.js --host=127.0.0.1 --port=3034
 - **重写请求参数**：调整 API 请求中发送的参数。
 - **增加系统提示词**：添加系统提示词以引导模型的行为。
 - **增加工具**：比如打开gemini的grounding search
+- **同时支持 Chat Completions 与 Responses 的重写**：Go 版本会对 `POST /v1/chat/completions` 和 `POST /v1/responses` 应用同一套模型别名与重写规则。
 - **根据上下文 Token 长度路由请求**：类似于 moonshot-v1-auto，它会根据输入的 Token 数量将请求路由到不同的模型端点（例如，moonshot-v1-8k、moonshot-v1-32k、moonshot-v1-128k）。
 
 此代理适合部署在 one-api、one-hub 或 new-api 等中转平台的前端。
@@ -47,6 +50,7 @@ node rewrite.js --host=127.0.0.1 --port=3034
 ## Go 版本（推荐，内存占用更低）
 
 Go 版本功能与 Node.js 版本一致，但内存占用更低。
+另外，Go 版本已经支持 `POST /v1/responses` 的 rewrite/routing；Node.js 版本当前对 Responses 仍然只是透明代理，不会应用重写或路由规则。
 
 ```bash
 make build

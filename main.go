@@ -78,6 +78,16 @@ type ChatRequest struct {
 	Other map[string]interface{} `json:"-"`
 }
 
+// ResponsesRequest represents the incoming request body for /v1/responses.
+type ResponsesRequest struct {
+	Model        string                 `json:"model"`
+	Input        interface{}            `json:"input"`
+	Instructions interface{}            `json:"instructions,omitempty"`
+	Stream       bool                   `json:"stream"`
+	Tools        []interface{}          `json:"tools,omitempty"`
+	Other        map[string]interface{} `json:"-"`
+}
+
 // Custom Unmarshal to handle "Other" fields
 func (c *ChatRequest) UnmarshalJSON(data []byte) error {
 	type Alias ChatRequest
@@ -105,7 +115,6 @@ func (c *ChatRequest) UnmarshalJSON(data []byte) error {
 }
 
 func (c ChatRequest) MarshalJSON() ([]byte, error) {
-	type Alias ChatRequest
 	// Create a map combining specific fields and Other
 	m := make(map[string]interface{})
 	for k, v := range c.Other {
@@ -116,6 +125,49 @@ func (c ChatRequest) MarshalJSON() ([]byte, error) {
 	m["stream"] = c.Stream
 	if c.Tools != nil {
 		m["tools"] = c.Tools
+	}
+	return json.Marshal(m)
+}
+
+// Custom Unmarshal to handle "Other" fields.
+func (r *ResponsesRequest) UnmarshalJSON(data []byte) error {
+	type Alias ResponsesRequest
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+
+	delete(m, "model")
+	delete(m, "input")
+	delete(m, "instructions")
+	delete(m, "stream")
+	delete(m, "tools")
+	r.Other = m
+	return nil
+}
+
+func (r ResponsesRequest) MarshalJSON() ([]byte, error) {
+	m := make(map[string]interface{})
+	for k, v := range r.Other {
+		m[k] = v
+	}
+	m["model"] = r.Model
+	m["input"] = r.Input
+	m["stream"] = r.Stream
+	if r.Instructions != nil {
+		m["instructions"] = r.Instructions
+	}
+	if r.Tools != nil {
+		m["tools"] = r.Tools
 	}
 	return json.Marshal(m)
 }
@@ -146,14 +198,47 @@ func getMessagesTokenCount(messages []Message) int {
 	return totalTokens
 }
 
+func getInterfaceTokenCount(value interface{}) int {
+	switch v := value.(type) {
+	case nil:
+		return 0
+	case string:
+		return getTokenCount(v)
+	case []interface{}:
+		total := 0
+		for _, item := range v {
+			total += getInterfaceTokenCount(item)
+		}
+		return total
+	case map[string]interface{}:
+		total := 0
+
+		if text, ok := v["text"].(string); ok {
+			total += getTokenCount(text)
+		}
+		if content, ok := v["content"]; ok {
+			total += getInterfaceTokenCount(content)
+		}
+		if output, ok := v["output"]; ok {
+			total += getInterfaceTokenCount(output)
+		}
+
+		return total
+	default:
+		return 0
+	}
+}
+
+func getResponsesTokenCount(req ResponsesRequest) int {
+	return getInterfaceTokenCount(req.Instructions) + getInterfaceTokenCount(req.Input)
+}
+
 // --- Logic Functions ---
 
-func selectModel(messages []Message, rule RoutingRule) string {
+func selectModelForTokenCount(tokenCount int, rule RoutingRule) string {
 	if len(rule.Models) == 0 || rule.Threshold == 0 {
 		return ""
 	}
-
-	tokenCount := getMessagesTokenCount(messages)
 
 	// Extract lengths and sort
 	var lengths []int
@@ -178,6 +263,196 @@ func selectModel(messages []Message, rule RoutingRule) string {
 		return lengthToModel[lengths[len(lengths)-1]]
 	}
 	return ""
+}
+
+func selectModel(messages []Message, rule RoutingRule) string {
+	return selectModelForTokenCount(getMessagesTokenCount(messages), rule)
+}
+
+func selectResponsesModel(req ResponsesRequest, rule RoutingRule) string {
+	return selectModelForTokenCount(getResponsesTokenCount(req), rule)
+}
+
+func appendRewriteMessages(messages []Message, raw interface{}) []Message {
+	msgs, ok := raw.([]interface{})
+	if !ok {
+		return messages
+	}
+
+	var newMsgs []Message
+	tempBytes, _ := json.Marshal(msgs)
+	if err := json.Unmarshal(tempBytes, &newMsgs); err != nil {
+		return messages
+	}
+
+	return append(newMsgs, messages...)
+}
+
+func appendRewriteTools(tools []interface{}, raw interface{}) []interface{} {
+	if rewriteTools, ok := raw.([]interface{}); ok {
+		return append(tools, rewriteTools...)
+	}
+	return tools
+}
+
+func rewriteDisablesStream(raw interface{}) bool {
+	if s, ok := raw.(string); ok && s == "false" {
+		return true
+	}
+	if b, ok := raw.(bool); ok && !b {
+		return true
+	}
+	return false
+}
+
+func applyChatRewriteRules(chatReq *ChatRequest, rules RewriteRules) {
+	for key, value := range rules {
+		switch key {
+		case "message":
+			chatReq.Messages = appendRewriteMessages(chatReq.Messages, value)
+		case "tools":
+			chatReq.Tools = appendRewriteTools(chatReq.Tools, value)
+		case "stream":
+			if rewriteDisablesStream(value) {
+				chatReq.Stream = false
+			}
+		case "model":
+			if s, ok := value.(string); ok {
+				chatReq.Model = s
+			}
+		default:
+			log.Printf("\t\trewrite rule: %s = %v", key, value)
+			chatReq.Other[key] = value
+		}
+	}
+}
+
+func normalizeResponseMessageContent(content interface{}) []interface{} {
+	switch v := content.(type) {
+	case nil:
+		return nil
+	case string:
+		return []interface{}{
+			map[string]interface{}{
+				"type": "input_text",
+				"text": v,
+			},
+		}
+	case []interface{}:
+		items := make([]interface{}, 0, len(v))
+		for _, rawPart := range v {
+			partMap, ok := rawPart.(map[string]interface{})
+			if !ok {
+				if text, ok := rawPart.(string); ok {
+					items = append(items, map[string]interface{}{
+						"type": "input_text",
+						"text": text,
+					})
+				}
+				continue
+			}
+
+			partType, _ := partMap["type"].(string)
+			text, hasText := partMap["text"].(string)
+			if strings.HasPrefix(partType, "input_") {
+				items = append(items, partMap)
+				continue
+			}
+			if partType == "text" && hasText {
+				items = append(items, map[string]interface{}{
+					"type": "input_text",
+					"text": text,
+				})
+				continue
+			}
+			if hasText {
+				items = append(items, map[string]interface{}{
+					"type": "input_text",
+					"text": text,
+				})
+				continue
+			}
+			items = append(items, partMap)
+		}
+		return items
+	default:
+		return nil
+	}
+}
+
+func convertRewriteMessageToResponseItem(raw interface{}) interface{} {
+	msgMap, ok := raw.(map[string]interface{})
+	if !ok {
+		return raw
+	}
+
+	role, _ := msgMap["role"].(string)
+	item := map[string]interface{}{
+		"type": "message",
+		"role": role,
+	}
+	item["content"] = normalizeResponseMessageContent(msgMap["content"])
+	return item
+}
+
+func normalizeResponsesInput(input interface{}) []interface{} {
+	switch v := input.(type) {
+	case nil:
+		return nil
+	case string:
+		return []interface{}{
+			map[string]interface{}{
+				"type": "message",
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type": "input_text",
+						"text": v,
+					},
+				},
+			},
+		}
+	case []interface{}:
+		return v
+	default:
+		return []interface{}{v}
+	}
+}
+
+func prependResponsesRewriteMessages(input interface{}, raw interface{}) interface{} {
+	msgs, ok := raw.([]interface{})
+	if !ok {
+		return input
+	}
+
+	rewriteItems := make([]interface{}, 0, len(msgs))
+	for _, msg := range msgs {
+		rewriteItems = append(rewriteItems, convertRewriteMessageToResponseItem(msg))
+	}
+
+	return append(rewriteItems, normalizeResponsesInput(input)...)
+}
+
+func applyResponsesRewriteRules(respReq *ResponsesRequest, rules RewriteRules) {
+	for key, value := range rules {
+		switch key {
+		case "message":
+			respReq.Input = prependResponsesRewriteMessages(respReq.Input, value)
+		case "tools":
+			respReq.Tools = appendRewriteTools(respReq.Tools, value)
+		case "stream":
+			if rewriteDisablesStream(value) {
+				respReq.Stream = false
+			}
+		case "model":
+			if s, ok := value.(string); ok {
+				respReq.Model = s
+			}
+		default:
+			log.Printf("\t\trewrite rule: %s = %v", key, value)
+			respReq.Other[key] = value
+		}
+	}
 }
 
 // --- Comment Stripping ---
@@ -332,40 +607,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 2. Rewrite rules
 	if rules, ok := cfg.RewriteRules[chatReq.Model]; ok {
 		log.Printf("Applying rewrite rules for %s", colorModel(chatReq.Model))
-		for key, value := range rules {
-			switch key {
-			case "message":
-				// Prepend messages
-				// value should be []interface{} (array of messages)
-				if msgs, ok := value.([]interface{}); ok {
-					// Convert interface{} to Message structs
-					var newMsgs []Message
-					tempBytes, _ := json.Marshal(msgs)
-					json.Unmarshal(tempBytes, &newMsgs)
-
-					chatReq.Messages = append(newMsgs, chatReq.Messages...)
-				}
-			case "tools":
-				// Append tools
-				if tools, ok := value.([]interface{}); ok {
-					chatReq.Tools = append(chatReq.Tools, tools...)
-				}
-			case "stream":
-				if s, ok := value.(string); ok && s == "false" {
-					chatReq.Stream = false
-				} else if b, ok := value.(bool); ok && !b {
-					chatReq.Stream = false
-				}
-			case "model":
-				if s, ok := value.(string); ok {
-					chatReq.Model = s
-				}
-			default:
-				// Generic rewrite for other fields
-				log.Printf("\t\trewrite rule: %s = %v", key, value)
-				chatReq.Other[key] = value
-			}
-		}
+		applyChatRewriteRules(&chatReq, rules)
 	}
 
 	// Prepare forward request
@@ -377,14 +619,65 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Forwarding data to backend")
 
-	targetURL := cfg.BackendURL + "/v1/chat/completions"
-	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(newBody))
+	forwardJSONRequest(w, r, cfg.BackendURL+"/v1/chat/completions", newBody)
+}
+
+func handleResponses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		handleProxy(w, r)
+		return
+	}
+
+	log.Printf("[%s] Received responses request: %s", time.Now().Format(time.RFC3339), r.Header.Get("Content-Type"))
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		return
+	}
+
+	var respReq ResponsesRequest
+	if err := json.Unmarshal(bodyBytes, &respReq); err != nil {
+		log.Printf("Failed to parse JSON: %v", err)
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Request model: %s", colorModel(respReq.Model))
+
+	cfg := getConfig()
+
+	if rule, ok := cfg.RoutingRules[respReq.Model]; ok {
+		newModel := selectResponsesModel(respReq, rule)
+		if newModel != "" {
+			log.Printf("Auto-routing: %s -> %s", colorModel(respReq.Model), colorModel(newModel))
+			respReq.Model = newModel
+		}
+	}
+
+	if rules, ok := cfg.RewriteRules[respReq.Model]; ok {
+		log.Printf("Applying rewrite rules for %s", colorModel(respReq.Model))
+		applyResponsesRewriteRules(&respReq, rules)
+	}
+
+	newBody, err := respReq.MarshalJSON()
+	if err != nil {
+		http.Error(w, "Failed to remarshal body", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Forwarding data to backend")
+
+	forwardJSONRequest(w, r, cfg.BackendURL+"/v1/responses", newBody)
+}
+
+func forwardJSONRequest(w http.ResponseWriter, r *http.Request, targetURL string, body []byte) {
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
 	}
 
-	// Copy headers
 	for k, v := range r.Header {
 		if k != "Host" && k != "Content-Length" {
 			proxyReq.Header[k] = v
@@ -403,7 +696,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers
 	for k, v := range resp.Header {
 		if k != "Content-Encoding" && k != "Transfer-Encoding" {
 			w.Header()[k] = v
@@ -411,14 +703,12 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	// Stream or copy body with flushing to avoid buffering streaming responses
 	writer := io.Writer(w)
 	if flusher, ok := w.(http.Flusher); ok {
 		writer = flushWriter{ResponseWriter: w, Flusher: flusher}
 	}
 
-	_, err = io.Copy(writer, resp.Body)
-	if err != nil {
+	if _, err := io.Copy(writer, resp.Body); err != nil {
 		log.Printf("Error copying response: %v", err)
 	}
 }
@@ -553,6 +843,7 @@ func main() {
 	}
 
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	http.HandleFunc("/v1/responses", handleResponses)
 	http.HandleFunc("/v1/models", handleModels)
 
 	// Catch-all for other routes
